@@ -1,0 +1,140 @@
+<html>
+<h2>Resurrection of the 1973 IMP code</h2>
+
+[updated 2020-06-12]
+<p>
+
+<b>Story of the 1973 IMP listing.</b>
+<p>A few years ago Paul Wexelblatt was getting rid of stuff and came across a bunch of BBN documents and software listings.  Dave Walden picked them up from Paul, as at that time Dave was working on a history of computing at BBN, with a promise to pass on to Bernie Cosell whichever of the documents Bernie wanted.  Among these documents was a 1973 assembly code line-printer listing of the ARPANET IMP software system, the only remaining early IMP system listing of which we know.   Bernie, Dave, and Tony Michel dreamed of somehow obtaining a text version of this listing which could again be assembled into machine code for the modified DDP-516 computer on which the IMP system was based.  A couple of attempts to scan the system were made before a decent, albeit only 300 ppi, scan was made.  Attempts to OCR the scan into text, however, were initially unsuccessful, and we merely posted the scans on the web.  Then in 2013 a set of people in Silicon Valley got involved (introduced to the BBN people by Jack Haverty).  Charlie Neuhauser, James Markevitch. and Bob Armstrong suppored successful scanning of the listing, OCRing of the scan, assembly of the program from the listing, and emulation of the assembled code on a 316 IMP emulator.  Thus, the 1973 IMP code was run again in a network of  emulated instances of IMP hardware.
+
+<ul>
+<li>The above <a href="imp-code.pdf">story is told in more detail in a paper</a> published in the <i>IEEE Annals of the History of Computing</i>, volume 36 number 2, 2014.
+
+<li>We have a scan of the IMP system listing for the BBN-modified Honeywell 516/316 from 1973.  It consists of four parts
+(in the order they have been bound in a binder since 1973):  one page of <a href="a-patches-ps.pdf">patches</a>  for the then running system; six pages of <a href="b-memory-allocation-ps.pdf">memory allocation definitions</a> for the system; <a href="c-listing-ps.pdf">a 274 page listing of the system</a>; and a approximately 50 page <a href="d-concondance.pdf">concordance</a> of the names and labels used in the system</a>.
+
+<li>We also have, courtesy of James Markevitch who created an OCR program good at scanning old line printer listings, plain text versions of the four files noted in the
+previous point:  <a href="a-patches-ps.txt">patches</a> ; <a href="b-memory-allocation-ps.txt">memory allocation definitions</a> ; <a href="c-listing-ps.txt">listing of the system</a> ; and <a href="d-concondance.txt">concordance</a>.
+
+<li>In 1973 we assembled the IMP system using a version of the Midas assembler for BBN's PDP-1d modified to assemble for the Honeywell-516-based IMP.  We have a scan of the <a href="bbn-1966-pdp1d-midas-manual.pdf">manual for Midas for the PDP-1d</a> prior to its modification to assemble IMP code rather than PDP-1 code.
+
+<li>Also from James Markevitch, we have: a version of <a href="midas516.txt">Midas for the IMP code</a> (this is a Perl program; once you download the .txt file, change the extension to .pl);  the <a href="imp3050.txt">IMP listing ready for assembly</a> (once you download this, change the extension to .asm); and a <a href="Makefile.txt">Makefile</a> (once you download this, drop the .txt extension) with which to run the assembly.  On my Windows computer, executing the program <tt>make.exe</tt>, in the same directory as the three just mentioned files, finds <tt>Makefile</tt> which assembles the IMP program.
+
+<li>The listing program used some <a href="detect-interrupt-bugs.pdf">automated tools for preventing interrupt bugs</a>.
+    
+ <li><a href="crib.pdf">Specification of the Crib program</a> used to draft packet and other data structure diagrams for the IMP system; author Bernie Cosell says, "CRIB was a standalone program that read specs describing the bit layout and it produced an ascii-ized version of it.   I found it easier than drawing those things by hand on graph paper."
+
+<li>We have a BBN report documenting the IMP software, in 1973 but  not precisely the same version of the system for which we have the scan of the listing.  This document comes in two parts:  <a href="IMPSYS-Document-with-flowcharts.pdf">flow charts and other documentation from early in 1973</a>, and <a href="Technical_Information_Report_89.pdf">BBN Technical Information Report 89</a> from later in the year which leaves out the flowcharts from earlier in the year.
+
+<li>We have BBN Report 1877, <a href="bbn-report-1877.pdf">Operating Manual</a> for the IMP, for early in the same year as the listing.
+
+<li>The Honeywell DDP-516 <a href="70130072176C_316_CPU_Descr_Apr73.pdf">CPU Manual</a> and <a href="70130072156_316_516_PgmrRef_Nov70.pdf">Programmers Reference Manual</a>. (We didn't use any of the Honeywell software; we just used their OP codes, etc., in our definitions for the Midas assembler we used on the PDP-1.)
+
+<li><a href="imp-hardware.pdf">Manual and diagrams for the BBN modifications to the Honeywell 516</a>.  The changes BBN made when debugging the Honeywell implementation of the BBN design may not be included in this manual.
+
+    <li><a href="neuhauser-summary.pdf">Charlie Neuhauser's attempt</a> to figure out the 516 hardware
+    changes from the IMP code.
+
+<li><a href="BBN1822_Jan1976.pdf">BBN Report 1822</a> about connecting an IMP to a Host (not from the same year as the above listing and Report 1877).
+
+<li><a href="1972-nmc.pdf">First paper on the ARPANET "Network Control Center"</a>
+
+<li><a href="1972-improvements-paper.pdf">1972 paper on the first round of improvements of the IMP system</a>
+
+<li>In September 2013, we discovered that John McQuillan had his IMP system listing from 1971, his NCC listing from a few months earlier in 1971, his IMP system listing from 1974.  John scanned them, James Markevitch OCRed them, and links to the plain text versions are below:
+
+    <ul>
+    <li><a href="imp2514.txt">listing for IMP system 2314</a>
+    <li><a href="imp2514conc.txt">concordance for 2314</a>
+    <li><a href="imp3147.txt">listing for IMP system 3147</a>
+    <li><a href="imp3147malloc.txt">memory allocation list for 3147</a>
+    <li><a href="imp3147patch.txt">patch listing for 3147</a>
+    <li><a href="ncc52.txt">listing for NCC system 52</a>
+    <li><a href="ncc52conc.txt">concordance for 52</a>
+    </ul>
+
+    We also have <a href="bbn-tir-90-ncc-software.pdf">BBN Technical Report 90</a> explaining the NCC software.
+
+<li>The Computer History Museum has listings of the Pluribus IMP code from 1987:  <a href="https://www.computerhistory.org/collections/catalog/102719993">part&nbsp;1</a> ; <a href="https://www.computerhistory.org/collections/catalog/102719994">part&nbsp;2</a>
+
+<li>As explained in the <a href="imp-code.pdf">paper mentioned at the top of this page</a>, eventually the 316 IMP code was used on the BBN C30 computer that was microcoded to look a lot like a Honeywell 316 but with a few efficiency improvements, known as the <a href="mbb-paper.pdf">MBB</a>.  Later new microcode for the C/30 was developed which provided additional efficiency.  This history is sketched on PDF pages 12 and 13 of the <a href="c30-nmfs-programmers-refererence-bbn-tr-3000.pdf">C/30 Native Mode Firmware System Programmer's Reference Manual</a>.  The Computer History Museum also has a <a href="https://www.computerhistory.org/collections/catalog/102774976">listing (from Eric Hahn) of  a 1982 version of the NMFM</a> (the long PDF file includes other listings related to the IMP listing).
+
+<li>We have recently learned of extant listings of the last two major releases of the packet-switching code from BBNCC: PSN7 which rewrote the end-to-end algorithms, and PSN8 which added congestion control.  Microfiche exists for these program listings.
+
+
+
+
+
+</ul>
+
+<p>
+<a name="participants">
+<b>Participants in the IMP software evolution, 2013 software resurrection, and writing the paper
+for the <i>IEEE Annals of the History of Computing</i></b>
+
+<p>
+Among the people who were involved with the packet switch code or this recounting of its history were Len Abram, Peter Allen, Ellie Baker, Ben Barker, Helen Bowns, Rosemary Carter,  Eugene Chang,  Steve Cohn, Bernie
+Cosell, Will Crowther, Peter Cudhea, Jim Dempsey, Eric Elsam, Miles Fidelman, Walter Gillett, Jack Haverty, Jim
+Herman, Bob Hess, Alan Hill, Bob Hinden, Doug Hirsch, Morris Keesan, Richard Koolish, Mike Kraley, Ken Laube, Joel
+Levin, Ben Littauer, Andy Malis, Alex McKenzie, John McQuillan, Tony Michel, Tom Peters, Ken Pogran, Drew Powles, Peg Primark, Ira Richer,
+Eric Roberts, John Robinson, Cliff Romash, Eric Rosen, Paul Santos, Linda Seamonson, Ken Turkewitz, Dave
+Walden, Jil Westcott, and Paul Wexelblat.
+<p>
+In addition to some of the people listed in the prior paragraph, the people involved in the 2013 recovery of the IMP code were: Bob Armstrong, Tom Kilbourn, James
+Markevitch, and Charlie Neuhauser, who reside and work in Silicon Valley, and BBN librarian Jennie Connolly.
+
+<p>
+Tell me if you think  you should be in this list.  -Dave
+<p>
+<a name="neetworklist">
+<b>Network list</i></b>
+
+<p>
+On October 4 and 7, 2013, an exchange
+of emails on the ex-BBN mailing list listed some of the companies to which BBNCC and other parts of BBN delivered networks &mdash; among them ARPANET/MILNET
+Abbey Bank,
+Amadeus,
+BBN Networks,
+BBN net,
+Bank of Hawaii,
+Barclays,
+Berkeley Library,
+Burlington Northern,
+Chembank,
+Citibank,
+Customs/Treasury,
+DISNET 1,2, 3,
+ENI,
+5th Signal Net,
+ISTEL,
+ITT,
+IRRC,
+Irving Trust,
+JAL,
+KDD,
+MCI,
+MINET,
+Many military exercise networks (Reforger, Forger, etc.),
+Marriot,
+Mastercard,
+Michigan Bell,
+NKK,
+NatWest, Nexis,
+On-Line Systems,
+PGI,
+Packet Radio Net,
+Packet Voice Satcom,
+Schulumberger, Sixtel,
+USAF Academy,
+VISA, Wang, Weyerhauser,
+WINNET,
+Wideband net, and several classified networks.
+
+<p>Contributors to this exchange were Jack Haverty, Bernie Cosell, Ken Turkewitz, Ben Barker, Morris Keesan, Cliff Romash, and, with particular good memories or personal archives, Alan Hill and Peg Primak.
+
+<p><p>
+   <center>.../a-files/bbn-web/impcode/web/</center>
+   </p>
+
+
+</html>

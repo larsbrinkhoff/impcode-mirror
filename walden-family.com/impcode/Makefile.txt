@@ -1,0 +1,8 @@
+BANNER1=" *** THIS DOCUMENT MAY CONTAIN BBN PROPRIETARY INFORMATION. ***"
+BANNER2=" ***      FURNISHED FOR U. S. GOVERNMENT END USE ONLY.      ***"
+TITLE="IMP,3050,IMP"
+DATE="7:20 PM 9/16/1973"
+ASMARGS=-banner ${BANNER1} -banner ${BANNER2} -title ${TITLE} -date ${DATE}
+
+imp3050.lst : imp3050.asm
+	midas516.pl ${ASMARGS} -lstfile imp3050.lst -strfile imp3050.malloc -concfile imp3050.conc -memfile imp3050.mem imp3050.asm

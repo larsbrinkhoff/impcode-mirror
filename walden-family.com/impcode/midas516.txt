@@ -1,0 +1,1880 @@
+#!/usr/local/bin/perl
+#
+# midas516.pl assembler for the Honeywell DDP-516/316 computers
+#
+#	Copyright  2013  James A. Markevitch
+#		ALL RIGHTS RESERVED
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
+#
+#
+#
+# MIDAS style assembler for the Honeywell DDP-516/316 computers intended
+# to be compatible with the syntax used by BBN for the ARPANET IMP/TIP
+# assembly language software.
+#
+# This was created based on a document describing the PDP-6 MIDAS assembler
+# syntax and an output listing of a version of the IMP software.  Much of
+# the syntax and semantics were inferred from them and may or may not be
+# correct.  It is also highly likely that the original assembler supported
+# a richer syntax, as did the PDP-6 MIDAS assembler, but without any examples
+# or documentation of the syntax, there was no attempt to speculatively
+# enhance this program.
+#
+# Subsequent examination of the PDP-1 MIDAS assembler document provided
+# additional information, including identifying features of this assembler
+# that are probably not implemented properly (e.g. nested macro defintions).
+# The PDP-1 MIDAS document still doesn't completely describe some of the
+# features found in the IMP listing.
+#
+# This program also implements code to generate an interrupt "concordance"
+# listing that was, presumably, created by a post-processor in the original
+# tool chain.
+#
+#
+# General desription
+#
+# The program is a traditional two-pass assembler, where the intent of the
+# first pass is to assign values to symbols and identify memory regions,
+# and the second pass determines all final memory values and generates
+# most output.
+#
+# The assembler has no built-in symbols for the target processor and only
+# a small number of keywords.  The input is free format, allowing multiple
+# words (or instructions) per line.  A single space character and multiple
+# consecutive space characters have different treatment, as does an
+# end-of-line.
+#
+# Except for implementing the syntax for directives, the assembler loops,
+# evaluating tokens to determine and compute the value of a "word," then
+# moves on to the next word.  A word consists of one or more "fields"
+# separated by a *single* space character and terminated by a non-field
+# character, including end-of-line and multiple spaces.  Fields consist
+# of "syllables" (symbols and numbers), and numeric operators, such as
+# plus, minus, etc.  The detailed syntax is described below.
+#
+# The assembler maintains a "location counter" that is used as the address
+# associated with the word.  The location counter is set by following a
+# word with the "/" character (with no spaces between the last field and
+# the "/" character).  Normally, the location counter is incremented after
+# each word.
+#
+# Addresses in the range 0 - 077777 (octal) represent memory locations that
+# can contain the values of words.  Address greater than or equal to 0100000
+# are special and represent a virtual "string space" instead of memory
+# locations.  These strings can be output to a special output file intended
+# for just that purpose.
+#
+# Words in the range 0 - 177777 (octal) represent normal data that can be
+# stored in memory locations.  The word 0200000 indicates that the memory
+# location is a blank storage segment.  Words in the range 0300000 - 0307777
+# represent an interrupt level specification.
+# 
+
+#
+# Unsupported syntax
+#	NULL
+#	OPSYN
+#	STOP
+#	DIMENSION
+#	OFFSET
+#	START
+#	VARIABLES
+#	Variable names using #
+#	Address tag of the form A+3:
+#	[01]IF N syntax
+#	Arbitrary sequences of addition characters
+#	Second symbol in IRP for remainder of list
+#
+# Incorrect behavior
+#	.ASCII should read a character at a time for listing improvement
+#	177777 appears to be treated differently from -1 for constant region
+#
+#	Symbol distinction is not limited to 6 characters
+#	EQUALS is a syntactic operation, rather than symbol table operation
+#	Separate symbol tables for names, synonyms, macros, pseudo-instructions
+#	Support DEFINE and macro name on separate lines
+#
+# Questionable behavior
+#	Is UNCON implemented properly?
+#	Is "Z" handled correctly?
+#	Should .RPTCNT be supported?
+#	Should CHARACTER, FLEXO, TEXT be supported?
+#	Should EQUALS substitution be remembered across passes?
+#	Are 0IF and 1IF allowed to be redefined?
+#
+#	How should overflow be handled for + and -?
+#	Should "T" fold the result?
+#	Should "Q" and "R" treat numbers as signed or unsigned?
+#	Which operators should preserve $V_ADDR?
+#	What if [01]IF P is terminated by a slash?
+#	Verify correct truncation of results by 2^16
+#	What if macro argument matches a different dummy argument name?
+#
+# Todo
+#	-longnames to differentiate names longer than 6 characters
+#	-nowarn to suppress warnings
+#	-compat or -strict for strict compabibility w/original version
+#	-pgtitle for title lines at all page breaks
+#	-nomulti to suppress multiple space to tab conversion
+#	-nconst to limit number of constant regions
+#	-lc for initial location counter value
+#	-noinctl to not expand ^X into control
+#	-noinquote to not expand "X" into control
+#	-outctl to output controls as ^X
+#	-outquote to output controls as "X"
+#
+#	token_bracketed can infinite loop if no closing bracket exists
+#	token_definebody can infinite loop if no TERMINATE exists
+#	token_irpbody can infinite loop if no ENDIRP exists
+#	Prevent runaway input from consuming all of memory
+#
+#	Verify that unget_token(), tabs, spaces, and $g_atspace are consistent
+#	Remove hack for "START" in parse_funcs
+#	Create issymbol() to pattern match symbol
+#	Ensure that subst_arg is not fooled by a period within a word
+#	Figure out top of page and blank lines
+#	Clarify space and tab
+#	Ensure that single-quote is handled properly
+#	Fix concordance order to match original
+#	More general purpose mapping of control characters within .ASCII
+#	Add general method for pruning symbols from concordance listing
+#	Is slash character allowed in multiple positions in DEFINE statement?
+#	How should tab and newline be handled in IRP?
+#	Generate error message for incorrect name after TERMINATE
+#	Ensure proper handling of macros with no args and too many args
+#	Proper skipping of first line of defsfile and asmfile
+#
+#	Generate DDP-516 binary format files (what is the format?)
+#	Display symbol table
+#	Display constant/variable sections
+#	MIDAS-style error messages
+#	6-character names for all keywords
+#	Special case -0
+#	Identify re-definitions of tags, etc.
+#	Ignore illegal characters
+#	Handle indefinite location counter
+#	Illegal expression with relocatable symbols
+#	Print constant and variable regions on pass 1 and 2
+#	Add check for current page reference in field 2 of a word
+#	Generate error for octal numbers containing the digit 8 or 9
+#	Generate error when using an undefined symbol on second pass
+#	Add pdp1 mode
+#	Test multiple expressions in WORD pseudo-instructions
+#
+
+#
+# $g_lnum	Current line number
+# $g_line	Current line
+# $g_inbuf	Current input buffer
+# @g_inbufstack	Stack of input buffers (for macro/repeat/etc. substitution)
+# @g_filler	Stack of input fill functions
+# @g_irp	Stack of IRP descriptors
+#
+# %g_synonym	Synonyms
+# %g_macro	Macros
+# @g_const	Constants
+#
+# $g_lc		Location counter
+# $g_lasttag	Most recent address tag encountered
+# $g_lastop	Most recent pseudo-instruction or macro encountered
+#
+
+$utilname = "midas516.pl";
+$utilvers = "1.1 9/1/2013";
+
+$V_UNDEF	= 004000000000;		# Value is undefined
+$V_ADDR		= 002000000000;		# Value is an address
+$V_SPECIAL	= 000000200000;		# Special value (bss or string)
+$V_SIGN		= 000000100000;		# Sign bit of numeric value
+$V_VALUE	= 000000177777;		# Actual numeric value
+
+$V_STATUS = $V_UNDEF | $V_ADDR;		# Mask of status bits
+$V_STICKY = $V_STATUS | $V_SPECIAL;	# Bits to save after binary operation
+$V_WORD = $V_UNDEF | $V_SPECIAL | $V_VALUE;	# Bits after parse_word
+
+$PREC_NEG	= 0;
+$PREC_AND	= 1;
+$PREC_OR	= 1;
+$PREC_XOR	= 1;
+$PREC_TIMES	= 1;
+$PREC_DIVIDE	= 1;
+$PREC_REMAINDER	= 1;
+$PREC_PLUS	= 3;
+$PREC_MINUS	= 3;
+$PREC_NONE	= 4;
+
+$pat_decimal = "[0-9]+\.";
+$pat_octal = "[0-7]+";
+$pat_symbol = "[0-9A-Z\.]+";
+$pat_separator = "[\:\/\,\+\-\[\]\(\)]";
+$pat_special = "\"[AQRTUXZ]\"";
+$pat_newline = "[\n\r\f]";
+$pat_space = " ";
+$pat_optspace = "[ \t]";
+$pat_whitespace = "[ \t\n]";
+
+%parse_funcs = (
+	".ASCII",	\&parse_ascii,
+	"CONSTANTS",	\&parse_constants,
+	"DECIMAL",	\&parse_decimal,
+	"DEFINE",	\&parse_define,
+	"EQUALS",	\&parse_equals,
+	"EXPUNGE",	\&parse_expunge,
+	"IRP",		\&parse_irp,
+	"IRPC",		\&parse_irpc,
+	"OCTAL",	\&parse_octal,
+	"PNTNUM",	\&parse_pntnum,
+	"PRINT",	\&parse_print,
+	"PRINTX",	\&parse_printx,
+	"REPEAT",	\&parse_repeat,
+	"WORD",		\&parse_word_op,
+
+	" ",		\&parse_no_operation,
+	"\t",		\&parse_no_operation,
+	"\n",		\&parse_no_operation,
+
+	"START",	\&parse_no_operation,
+);
+
+@skipconc= (	"ADD", "ANA", "AOA", "ALR", "ALS", "ARR", "ARS", "BSS", "CAR",
+		"CAL", "CAS", "CHS", "CMA", "CRA",
+		"ERA", "I", "IAB", "ICA", "ICL", "ICR", "IMA", "IRS", "JMP",
+		"JST", "K", "LDA", "LDX", "LGL", "LGR", "LLL", "LLR", "LLS",
+		"LRL", "LRR", "LRS", "NOP", "SKP", "SLN", "SLZ",
+		"SMI", "SNZ", "SPL", "SSM", "SSP", "STA", "STX", "SUB", "SZE",
+		"TCA", "X", "XI" );
+
+$g_lpp = 65;
+$g_lead = 4;
+$g_clead = 2;
+
+while (@ARGV > 0 && $ARGV[0] =~ /^\-/) {
+	$arg = shift(@ARGV);
+	&prusage(0)					if ($arg eq "-help");
+	$f_noconc = 1, next				if ($arg eq "-noconc");
+	$f_noprint = 1, next				if ($arg eq "-noprint");
+	$f_notitle = 1, next				if ($arg eq "-notitle");
+	$f_quiet = 1, next				if ($arg eq "-q");
+	$f_showff = 1, next				if ($arg eq "-showff");
+	&prversion()					if ($arg eq "-version");
+	&prusage(1) if (@ARGV < 1);
+	push(@g_banners, shift(@ARGV)), next		if ($arg eq "-banner");
+	push(@g_cmds, shift(@ARGV)), next		if ($arg eq "-c");
+	$g_concfile = shift(@ARGV), next		if ($arg eq "-concfile");
+	$g_clead = shift(@ARGV), next			if ($arg eq "-clead");
+	$g_datestr = shift(@ARGV), next			if ($arg eq "-date");
+	push(@g_defsfiles, shift(@ARGV)), next		if ($arg eq "-defs");
+	$g_lead = shift(@ARGV), next			if ($arg eq "-lead");
+	$g_lpp = shift(@ARGV), next			if ($arg eq "-lpp");
+	$g_lstfile = shift(@ARGV), next			if ($arg eq "-lstfile");
+	$g_memfile = shift(@ARGV), next			if ($arg eq "-memfile");
+	$g_skiplines = shift(@ARGV), next		if ($arg eq "-skip");
+	$g_strfile = shift(@ARGV), next			if ($arg eq "-strfile");
+	$g_title = shift(@ARGV), next			if ($arg eq "-title");
+	&prusage(1);
+}
+
+if (@ARGV != 1) {
+	print "Error: missing assembly file name; -help for help\n";
+	exit(1);
+}
+$g_asmfile = shift(@ARGV);
+
+if (!defined($g_datestr)) {
+	@timeinfo = localtime;
+	$ampm = ($timeinfo[2] >= 12) ? "PM" : "AM";
+	$hour = $timeinfo[2] % 12;
+	$hour = 12 if ($hour == 0);
+	$g_datestr = sprintf("%d:%02d %s %d/%d/%d",
+			     $hour, $timeinfo[1], $ampm,
+			     $timeinfo[4]+1, $timeinfo[3], $timeinfo[5]+1900);
+}
+
+if (defined($g_lstfile)) {
+	open(LSTFILE, ">$g_lstfile") || die "Error: cannot create $g_lstfile\n";
+}
+if (defined($g_lstfile)) {
+	open(MEMFILE, ">$g_memfile") || die "Error: cannot create $g_memfile\n";
+}
+
+while (@g_cmds) {
+	$cmd = shift(@g_cmds);
+	if ($cmd !~ /^([\.A-Z0-9]+)\=([0-7]+)$/) {
+		die "Error: invalid command: $cmd\n";
+	}
+	($sym, $value) = ($1, $2);
+	$g_symtab{$sym} = oct($value);
+}
+
+&pass(1);
+#&dump_undefined();
+&pass(2);
+&dump_undefined();
+&print_strings();
+&print_concordance();
+
+close(MEMFILE) if (defined($g_memfile));
+close(LSTFILE) if (defined($g_lstfile));
+
+sub prusage {
+	my($code) = @_;
+
+	print "Usage: $utilname  [ options ... ] asmfile\n";
+	print "    -banner string   Add banner line at top of each page\n";
+	print "    -c sym=value     Assign value to symbol\n";
+	print "    -concfile file   Concordance output file\n";
+	print "    -date string     Use string for date in listing\n";
+	print "    -defs file       File containing definitions\n";
+	print "    -help            Display this message\n";
+	print "    -lstfile file    Listing output file\n";
+	print "    -memfile file    Memory output file\n";
+	print "    -noconc          Do now not show concordance in listing\n";
+	print "    -noprint         Suppress PRINT, PRINTX, and PNTNUM output\n";
+	print "    -notitle         Do not parse a title line\n";
+	print "    -q               Do not output messages (quiet)\n";
+	print "    -showff          Show form-feed in listing\n";
+	print "    -skip nlines     Skip first nlines of input (default 1)\n";
+	print "    -strfile file    String output file\n";
+	print "    -title string    Title of program in listing\n";
+	print "    -version         Print version number\n";
+
+	exit($code);
+}
+
+sub prversion {
+	print "$utilname version $utilvers\n";
+	exit(0);
+}
+
+sub pass {
+	my($pass) = @_;
+
+	$g_lnum = 0;
+	$g_line = undef;
+	$g_inbuf = "";
+	$g_atspace = 1;
+	$g_havechar = 0;
+	@g_inbufstack = ();
+	@g_filler = ();
+	@g_irp = ();
+
+	%g_synonym = ();
+	@g_const = ();
+
+	$g_radix = 8;
+	$g_lc = 0;
+	$g_lasttag = "";
+	$g_lastop = "";
+
+	$g_lev = "";
+	$g_conclev = "";
+
+	$g_pass = $pass;
+
+	@saved_defsfiles = @g_defsfiles;
+	push(@g_filler, \&midas_readdefs);
+
+	open(ASMFILE, $g_asmfile) || die "Error: cannot open $g_asmfile\n";
+	&midas_parse();
+	close(ASMFILE);
+
+	@g_defsfiles = @saved_defsfiles;
+}
+
+#
+# Syntax:
+#	EQUALS symbol,symbol
+#	.ASCII quoted
+#	PRINT quoted
+#	PRINTX quoted
+#	PNTNUM word
+#	REPEAT expr,[text]
+#	IRP [sym1a,sym2a,list,...],[sym1b,sym2b,list,...],...
+#	IRPC [symbol,,text]
+#	ENDIRP
+#	DEFINE symbol symbol,symbol,...
+#	TERMINATE rest of line
+#	macro arg,arg,[arg]
+#	symbol=word
+#	symbol:
+#	word/
+#	word
+#
+sub midas_parse {
+	my($i, $token, $token2, $value, $func);
+
+	for ($i = 0; $i < $g_skiplines; ++$i) {
+		for (;;) {
+			$token = &midas_token();
+			last if (!defined($token));
+			last if ($token eq "\n");
+		}
+	}
+
+	#
+	# Skip blank lines, then read title line
+	#
+	if (!$f_notitle) {
+		while (($token = &midas_token()) eq "\n") {
+			last if ($g_havechar);
+		}
+		if ($token ne "\n") {
+			return if (!defined($token));
+			&unget_token($token);
+			$token = &token_rest_of_line();
+			$token =~ s/\n//s;
+			$g_title = $token if (!defined($g_title));
+		}
+	}
+
+	for (;;) {
+		$token = &midas_token();
+		last if (!defined($token));
+
+		$token = $g_synonym{$token} if (defined($g_synonym{$token}));
+
+		# Parse pseudo-instruction
+		$func = $parse_funcs{$token};
+		if (defined($func)) {
+			$g_lastop = $token if ($token =~ /^[A-Z]/);
+			&$func($token);
+			next;
+		}
+
+		# Parse symbol= and symbol:
+		if ($token =~ /^[0-9A-Z\.\']*[A-Z\.\'][0-9A-Z\.\']*$/) {
+			$token2 = &midas_token();
+			last if (!defined($token2));
+			if ($token2 eq "=") {
+				$token =~ s/^(......)(.*)$/$1/;
+				$g_symtab{$token} = $value if (($value = &parse_word()) ne "");
+				next;
+			} elsif ($token2 eq ":") {
+				$token =~ s/^(......)(.*)$/$1/;
+				$g_symtab{$token} = $g_lc | $V_ADDR;
+				$g_lasttag = $token;
+				next;
+			}
+			&unget_token($token2);
+		}
+
+		&unget_token($token);
+
+		# The only choice left is a word, possibly followed by /
+		if (($value = &parse_word()) ne "") {
+			$token2 = &midas_token();
+			last if (!defined($token2));
+			if ($token2 eq "/") {
+				$g_lc = $value;
+				next;
+			}
+			&unget_token($token2);
+			&emit_word($g_lc, $value);
+			++$g_lc if ($g_lc <= 077777 && ($value < 0300000 || $value > 0377777));
+			next;
+		}
+
+		$token = &midas_token();
+		&error_parse("unexpected token: $token");
+	}
+}
+
+sub parse_no_operation {
+}
+
+sub parse_octal {
+	$g_radix = 8;
+}
+
+sub parse_decimal {
+	$g_radix = 10;
+}
+
+sub parse_word_op {
+	my($value, $token);
+
+	return if !&parse_space();
+	for (;;) {
+		return if (($value = &parse_word()) eq "");
+		&emit_word($g_lc, $value);
+		$token = &midas_token();
+		return if (!defined($token));
+		last unless ($token eq ",");
+	}
+	&unget_token($token);
+}
+
+sub parse_equals {
+	my($synonym, $token);
+
+	return if !&parse_separator();
+	return if (($synonym = &parse_symbol()) eq "");
+	return if !&parse_separator();
+	return if (($token = &parse_symbol()) eq "");
+	$g_synonym{$synonym} = $token;
+}
+
+sub parse_expunge {
+	my($token, $symbol);
+
+	return if !&parse_separator();
+	for (;;) {
+		return if (($symbol = &parse_symbol()) eq "");
+		$g_symtab{$symbol} = undef;
+		last if (($token = &midas_token()) ne ",");
+	}
+	&unget_token($token);
+}
+
+sub parse_ascii {
+	my($token);
+	my($c1, $c2, $value);
+
+	$token = &token_quoted_string();
+	return if (!defined($token));
+	$token =~ s/\'//g;
+	if ($g_lc >= 0100000) {
+		$g_strings{sprintf("%06o", $g_lc>>6)} .= $token if ($g_pass == 2);
+	} else {
+		$token =~ s/\n/\r\n/gs;
+		while ($token ne "") {
+			if ($token =~ /^(.)(.)(.*)$/s) {
+				($c1, $c2, $token) = ($1, $2, $3);
+				$value = (unpack("C", $c1) << 8) |
+					 unpack("C", $c2) | 0100200;
+				$value &= ~0177400 if ($c1 eq "#");
+				$value &= ~0000377 if ($c2 eq "#");
+			} else {
+				$token =~ /^(.)(.*)$/s;
+				($c1, $token) = ($1, $2);
+				$value = (unpack("C", $c1) << 8) | 0100000;
+				$value &= ~0177400 if ($c1 eq "#");
+			}
+			&emit_word($g_lc, $value);
+			++$g_lc;
+		}
+	}
+}
+
+sub parse_print {
+	my($token);
+
+	$token = &token_quoted_string();
+	return if (!defined($token));
+	return if ($f_noprint);
+	&midas_print("PNT", $token);
+}
+
+sub parse_printx {
+	my($token);
+
+	$token = &token_quoted_string();
+	return if (!defined($token));
+	return if ($f_noprint);
+	print "$token";
+}
+
+sub parse_pntnum {
+	my($value);
+
+	return if !&parse_space();
+	return if (($value = &parse_word()) eq "");
+	return if ($f_noprint);
+	printf "%o ", $value;
+}
+
+sub parse_constants {
+	my($const);
+	my($nconst, $base, $size);
+
+	$nconst = @g_const;
+
+	if ($g_pass == 1) {
+		push(@g_constregions, [ $g_lc, $nconst ]);
+		$g_lc += $nconst;
+		@g_const = ();
+	} elsif ($g_pass == 2) {
+		if (@g_constregions == 0) {
+			&error_parse("no constant region from pass 1");
+			return;
+		}
+		$base = $g_constregions[0]->[0];
+		$size = $g_constregions[0]->[1];
+		shift(@g_constregions);
+		if ($nconst > $size) {
+			&error_parse("constant region size $size, but need $nconst");
+		} elsif ($g_lc != $base) {
+			&error_parse("constant region moved from $base to $g_lc");
+		}
+		while (@g_const) {
+			$const = shift(@g_const);
+			&emit_word($g_lc, $const);
+			++$g_lc;
+		}
+		$g_symtab{"UNCON"} = $g_lc | $V_ADDR;
+		$g_lc = $base + $size;
+	}
+}
+
+sub parse_define {
+	my($token, $macro, $body, $gen);
+	my(@args);
+
+	return if !&parse_space();
+	return if ($g_inbuf !~ /^([\.0-9A-Z]+)(.*)$/s);
+	($macro, $g_inbuf) = ($1, $2);
+
+	$token = &midas_token();
+	return if (!defined($token));
+	$gen = -1;
+	if ($token eq " ") {
+		$token = &midas_token();
+		return if (!defined($token));
+		if ($token eq "/") {
+			$gen = 0;
+		} else {
+			&unget_token($token);
+		}
+		for (;;) {
+			return if (($token = &parse_symbol()) eq "");
+			push(@args, $token);
+			$token = &midas_token();
+			return if (!defined($token));
+			if ($token eq "/") {
+				$gen = scalar @args;
+			} elsif ($token ne ",") {
+				last;
+			}
+		}
+	}
+	$gen = scalar @args if ($gen == -1);
+
+	if ($token ne "\n") {
+		&error_parse("bad DEFINE syntax");
+		return;
+	}
+	$body = &token_definebody();
+	$g_macro{$macro} = [ $body, $gen, @args ];
+}
+
+#
+# Indefinite repeat.  This loops across list(s) and assigns values
+# from the list into the symbol.  This function parses the lists,
+# capturing the symbols and items, and saves the text for the body
+# of the IRP.  The list information and body are stored for repeated
+# insertion by insert_irp() and next_irp().
+#
+# IRP [sym1a,sym2a,list,...],[sym1b,sym2b,list,...],...
+# body text
+# ENDIRP
+#
+sub parse_irp {
+	my(@argnames, @args, @list);
+	my($token, $arg, $body);
+
+	return if !&parse_space();
+	for (;;) {
+		return if !&parse_token("[");
+		return if (($token = &parse_symbol()) eq "");
+		push(@argnames, $token);
+		&parse_whitespace();
+		return if !&parse_token(",");
+		return if !&parse_token(",");
+		$arg = "";
+		for (;;) {
+			$token = &midas_unexpanded_token();
+			if (!defined($token)) {
+				&error_parse("bad IRP syntax");
+				return;
+			}
+			if ($token eq ",") {
+				push(@list, $arg);
+				$arg = "";
+			} elsif ($token eq "]") {
+				push(@list, $arg);
+				last;
+			} elsif ($token eq "\t" || $token eq "\n") {
+			} else {
+				$arg .= $token;
+			}
+		}
+		push(@args, [ @list ]);
+		@list = ();
+		&parse_optspace();
+		$token = &midas_token();
+		last if ($token ne ",");
+		&parse_optspace();
+	}
+	&unget_token($token);
+	$body = &token_irpbody();
+	&insert_irp(\@argnames, \@args, $body);
+}
+
+#
+# Indefinite repeat characters.  The body is repeated with each of the
+# symbol replaced by each character in the text.  This list and body are
+# stored for repeated insertion by insert_irp() and next_irp().
+#
+# IRPC [symbol,,text]
+# body text
+# ENDIRP
+#
+sub parse_irpc {
+	my(@argnames, @args, @list);
+	my($token, $string, $c, $body);
+
+	return if !&parse_space();
+	return if !&parse_token("[");
+	return if (($token = &parse_symbol()) eq "");
+	push(@argnames, $token);
+	&parse_whitespace();
+	return if !&parse_token(",");
+	&parse_whitespace();
+	return if !&parse_token(",");
+
+	$string = &token_bracketed();
+	while ($string =~ /^(.)(.*)$/s) {
+		($c, $string) = ($1, $2);
+		push(@list, $c);
+	}
+	push(@args, [ @list ]);
+
+	$body = &token_irpbody();
+	&insert_irp(\@argnames, \@args, $body);
+}
+
+#
+# Repeat text as many times as specified by the word, which may
+# even be zero.  The text can be enclosed in brackets, in which case
+# it may span multiple lines, or it can just be the remainder of
+# the line.
+#
+# REPEAT word,[text]
+# REPEAT word,rest_of_line
+#
+sub parse_repeat {
+	my($token, $token2, $token3, $value);
+	my($count, $i);
+
+	&parse_optspace();
+	return if (($count = &parse_word()) eq "");
+	&parse_optspace();
+	return if !&parse_token(",");
+
+	&parse_optspace();
+	$token = &midas_token();
+	if ($token eq "[") {
+		$body = &token_bracketed();
+	} else {
+		&unget_token($token);
+		$body = &token_rest_of_line();
+	}
+
+	for ($i = 0; $i < $count; ++$i) {
+		$g_inbuf = $body . $g_inbuf;
+	}
+}
+
+sub parse_optspace {
+	my($token);
+
+	while (($token = &midas_token()) =~ /^[ \t]$/) {
+	}
+	&unget_token($token);
+}
+
+sub parse_whitespace {
+	my($token);
+
+	while (($token = &midas_token()) =~ /^[ \t\n]$/) {
+	}
+	&unget_token($token);
+}
+
+sub parse_word {
+	my($value);
+
+	return "" if (($value = &parse_raw_word()) eq "");
+	return $value & $V_WORD;
+}
+
+#
+# A word consists of one or more fields separated by a single space.
+# The fields are added together with special handling for the second
+# field.  If the second field is an address, then the value of that
+# field is masked to 10 bits with the tenth bit being 0 if the pre-masked
+# value is in the range 0...777, else the tenth bit being 1.  This
+# corresponds to "page zero" and "current page" access to an address.
+#
+# Returns "" if a valid word is not found.
+#
+sub parse_raw_word {
+	my($value, $fieldnum, $token, $field);
+
+	return "" if (($value = &parse_field($PREC_NONE)) eq "");
+	$fieldnum = 2;
+	for (;;) {
+		last if (($token = &midas_token()) ne " ");
+		return $value if (($field = &parse_field($PREC_NONE)) eq "");
+		if ($fieldnum == 2 && ($field & $V_ADDR)) {
+			$field |= 01000 if (($field & $V_VALUE & ~$V_SIGN) > 0777);
+			$field &= $V_SIGN | 01777;
+		}
+		$value = (($value + $field) & $V_VALUE) | (($value | $field) & $V_STICKY);
+		++$fieldnum;
+	}
+	&unget_token($token);
+	return $value;
+}
+
+#
+# Parse a field.  Returns the value of the field, including flags for
+# undefined and address tags.  The valid field syntax is:
+#
+#	number		Numeric value (octal or decimal)
+#	symbol		Value of a symbol
+#	.		Value of the current location counter
+#	[word]		Value of the word within the brackets
+#	(word)		Address of the value stored in constant region
+#	0IF ...		Conditional 0
+#	1IF ...		Conditional 1
+#	-field		Negate
+#	field+field	Add
+#	field-field	Subtract
+#	field"A"field	Logical AND
+#	field"T"field	Multiply
+#	field"Q"field	Divide
+#	field"R"field	Remainder
+#	field"U"field	Inclusive-OR
+#	field"X"field	Exclusive-OR
+#
+# Note that a missing right parenthesis is allowed for the (word) syntax.
+#
+sub parse_field {
+	my($prec) = @_;
+	my($token, $value, $field, $result);
+
+	$token = &midas_token();
+	return "" if (!defined($token));
+	if ($token eq "[") {
+		$value = &parse_raw_word();
+		return "" if !&parse_token("]");
+	} elsif ($token eq "(") {
+		$value = &parse_raw_word();
+		$value = &save_constant($value);
+		$token = &midas_token();
+		if ($token eq "\n") {
+			&unget_token($token);
+		} elsif ($token eq "\t") {
+			&unget_token($token);
+		} elsif ($token ne ")") {
+			&error_parse("missing right paren");
+			return "";
+		}
+	} elsif ($token eq "-") {
+		return if (($value = &parse_field($PREC_NEG)) eq "");
+		$value = (-$value & $V_VALUE) | ($value & $V_STICKY);
+	} elsif ($token =~ /^[0-9]+\.$/) {
+		$value = $token;
+	} elsif ($token =~ /^[0-7]+$/) {
+		$value = ($g_radix == 10) ? $token : oct($token);
+	} elsif ($token =~ /^[0-9]+$/) {
+		$value = $token;
+	} elsif ($token eq ".") {
+		$value = $g_lc | $V_ADDR;
+	} elsif ($token =~ /^[01]IF$/) {
+		return "" if (($value = &parse_cond($token)) eq "");
+	} elsif ($token =~ /^[0-9A-Z\.\']+$/) {
+		$token =~ s/^(......)(.*)$/$1/;
+		$value = &sym_lookup($token);
+		$value = 0 if (!defined($value));
+	} else {
+		&unget_token($token);
+		&error_parse("unknown symbol in field: $token") if ($prec != $PREC_NONE);
+		return "";
+	}
+
+	for (;;) {
+		$token = &midas_token();
+		return $value if (!defined($token));
+		if ($token eq "+") {
+			&unget_token($token), last if ($prec <= $PREC_PLUS);
+			return "" if (($field = &parse_field($PREC_PLUS)) eq "");
+			$result = $value + $field;
+		} elsif ($token eq "-") {
+			&unget_token($token), last if ($prec <= $PREC_MINUS);
+			return "" if (($field = &parse_field($PREC_MINUS)) eq "");
+			$field &= ~$V_ADDR if (!($value & $V_ADDR));
+			$result = $value - $field;
+		} elsif ($token eq "\"A\"") {
+			&unget_token($token), last if ($prec <= $PREC_AND);
+			return "" if (($field = &parse_field($PREC_AND)) eq "");
+			$result = $value & $field;
+		} elsif ($token eq "\"T\"") {
+			&unget_token($token), last if ($prec <= $PREC_TIMES);
+			return "" if (($field = &parse_field($PREC_TIMES)) eq "");
+			$result = ($value & $V_VALUE) * ($field & $V_VALUE);
+		} elsif ($token eq "\"Q\"") {
+			&unget_token($token), last if ($prec <= $PREC_DIVIDE);
+			return "" if (($field = &parse_field($PREC_DIVIDE)) eq "");
+			if (($field & $V_VALUE) == 0) {
+				&error_parse("divide by zero");
+				last;
+			}
+			if ($value & $V_SIGN) {
+				$result = (0200000 - int((0200000 - ($value & $V_VALUE)) / ($field & $V_VALUE))) & $V_VALUE;
+			} else {
+				$result = int(($value & $V_VALUE) / ($field & $V_VALUE));
+			}
+		} elsif ($token eq "\"R\"") {
+			&unget_token($token), last if ($prec <= $PREC_REMAINDER);
+			return "" if (($field = &parse_field($PREC_REMAINDER)) eq "");
+			if (($field & $V_VALUE) == 0) {
+				&error_parse("divide by zero");
+				last;
+			}
+			$result = ($value & $V_VALUE) % ($field & $V_VALUE);
+		} elsif ($token eq "\"U\"") {
+			&unget_token($token), last if ($prec <= $PREC_OR);
+			return "" if (($field = &parse_field($PREC_OR)) eq "");
+			$result = $value | $field;
+		} elsif ($token eq "\"X\"") {
+			&unget_token($token), last if ($prec <= $PREC_XOR);
+			return "" if (($field = &parse_field($PREC_XOR)) eq "");
+			$result = $value ^ $field;
+		} else {
+			&unget_token($token);
+			return $value;
+		}
+		$value = ($result & $V_VALUE) | (($value | $field) & $V_STICKY);
+	}
+	return $value;
+}
+
+#
+# Parse a conditional expression.  A conditional expression beginning
+# with 0IF evaluates to 0 if the expression is true and 1, otherwise.
+# 1IF has the opposite result.  The syntax is:
+#
+#	nIF P		true on second pass
+#	nIF D symbol	true if symbol is defined
+#	nIF VP word	true if word is greater than or equal to zero
+#	nIF VZ word	true if word is equal to zero
+#
+# A / can be used to terminate the word, and the slash character will
+# be consumed by the parser here so that it is not later treated as
+# an assignment to the location counter.
+#
+sub parse_cond {
+	my($iftoken) = @_;
+	my($rval, $token, $value);
+
+	$rval = ($iftoken eq "1IF") ? 1 : 0;
+
+	return "" if (!&parse_space());
+	$token = &midas_token();
+	return "" if (!defined($token));
+	if ($token eq "P") {
+		$rval ^= 1 if ($g_pass == 1);
+	} elsif ($token eq "D") {
+		return "" if (!&parse_space());
+		return if (($token = &parse_symbol()) eq "");
+		$rval ^= 1 if (!defined($g_symtab{$token}));
+	} elsif ($token eq "VP") {
+		return "" if (!&parse_space());
+		return "" if (($value = &parse_raw_word()) eq "");
+		$rval ^= 1 if ($value & $V_SIGN);
+		&unget_token($token) if (($token = &midas_token()) ne "/");
+	} elsif ($token eq "VZ") {
+		return "" if (!&parse_space());
+		return "" if (($value = &parse_raw_word()) eq "");
+		$rval ^= 1 if (($value & $V_VALUE) != 0);
+		&unget_token($token) if (($token = &midas_token()) ne "/");
+	} else {
+		&error_parse("unexpected token: $token");
+		&unget_token($token);
+		return "";
+	}
+
+	return $rval;
+}
+
+sub parse_space {
+	my($token);
+
+	$token = &midas_token();
+	return 1 if ($token =~ /^[ \t]$/);
+	&error_token("space", $token);
+}
+
+sub parse_separator {
+	my($token);
+
+	$token = &midas_token();
+	return 1 if ($token =~ /^[ \t,]$/);
+	&error_token("separator", $token);
+}
+
+sub parse_symbol {
+	my($token);
+
+	$token = &midas_token();
+	return $token if ($token =~ /^[0-9A-Z\.\']+$/ && $token !~ /^\d+\.?$/);
+	&error_token("symbol", $token);
+}
+
+sub parse_token {
+	my($expect) = @_;
+	my($token);
+
+	$token = &midas_token();
+	return 1 if ($token eq $expect);
+	&error_token($expect, $token);
+}
+
+sub error_token {
+	my($expected, $token) = @_;
+
+	$token = "end of line" if ($token eq "\n");
+	$token = "space" if ($token eq " ");
+	$token = "tab" if ($token eq "\t");
+	print "Error: line $g_lnum: wanted $expected, got $token\n";
+	return "";
+}
+
+sub error_parse {
+	my($msg) = @_;
+
+	print "Error: line $g_lnum: $msg\n";
+	return "";
+}
+
+#
+# Display a message in MIDAS error format.  The format is
+#
+# eee aaaaa sym+o p string
+#
+# eee is the error code passed to this function
+# aaaaa is the current location counter
+# sym+o is the current location counter relative the most recent address tag
+# p is the most recent pseudo-instruction or macro
+# string is passed to this function
+#
+#
+sub midas_print {
+	my($code, $string) = @_;
+	my($lc, $taglc);
+
+	$lc = $g_lc & $V_VALUE;
+	printf "%3.3s %05o", $code, $lc;
+	if ($g_lasttag ne "") {
+		$taglc = $g_symtab{$g_lasttag} & $V_VALUE;
+		if ($lc < $taglc) {
+			printf " %.6s-%o", $g_lasttag, $taglc - $lc;
+		} else {
+			printf " %.6s+%o", $g_lasttag, $lc - $taglc;
+		}
+	}
+	if ($g_lastop ne "") {
+		printf " %-6.6s", $g_lastop;
+	}
+	print " $string\n";
+}
+
+#
+# Return a string representing the next token from the input stream.
+# If the end of the input stream has been reached, then this will
+# return undef.  Types of tokens that can be returned are:
+#
+#	symbol
+#	number
+#	\n			\n, \r, or \f
+#	space
+#	\t			\t or multiple spaces
+#	: / + - = , [ ] ( )
+#	"A" "Q" "R" "T" "U" "X"
+#	"Z"
+#
+sub midas_token {
+	my($token);
+
+	$token = &midas_unexpanded_token();
+	if (defined($g_macro{$token})) {
+		$g_lastop = $token;
+		&expand_macro($token);
+		return &midas_token();
+	}
+	return $token;
+}
+
+sub midas_unexpanded_token {
+	my($token, $quote, $c);
+
+	if ($g_inbuf eq "") {
+		&fill_inbuf();
+		return undef if ($g_inbuf eq "");
+	}
+
+	# Comment begins with / after white-space and continues to end of line
+	while ($g_atspace && $g_inbuf =~ /^\/[^\n]*(.*)/s) {
+		$g_inbuf = $1;
+	}
+
+	$g_atspace = 0;
+	if ($g_inbuf =~ /^[\n\r\f](.*)$/s) {
+		$g_inbuf = $1;
+		$token = "\n";
+		$g_atspace = 1;
+	} elsif ($g_inbuf =~ /^\t(.*)$/s) {
+		$g_inbuf = $1;
+		$token = "\t";
+		$g_atspace = 1;
+	} elsif ($g_inbuf =~ /^  +(.*)$/s) {
+		$g_inbuf = $1;
+		$token = "\t";
+		$g_atspace = 1;
+	} elsif ($g_inbuf =~ /^ (.*)$/s) {
+		$g_inbuf = $1;
+		$token = " ";
+		$g_atspace = 1;
+	} elsif ($g_inbuf =~ /^([0-9\']+\.)([^0-9A-Z\.\'].*)$/s) {
+		($token, $g_inbuf) = ($1, $2);
+		$token =~ s/\'//g;
+	} elsif ($g_inbuf =~ /^([0-7\']+)([^0-9A-Z\.\'].*)$/s) {
+		($token, $g_inbuf) = ($1, $2);
+		$token =~ s/\'//g;
+	} elsif ($g_inbuf =~ /^([0-9A-Z\.\']+)(.*)$/s) {
+		($token, $g_inbuf) = ($1, $2);
+		$token =~ s/\'//g;
+	} elsif ($g_inbuf =~ /^([\:\/\+\-\=\,\[\]\(\)])(.*)$/s) {
+		($token, $g_inbuf) = ($1, $2);
+	} elsif ($g_inbuf =~ /^(\"[AQRTUX]\")(.*)$/s) {
+		($token, $g_inbuf) = ($1, $2);
+	} elsif ($g_inbuf =~ /^(\"[Z]\")(.*)$/s) {
+		($token, $g_inbuf) = ($1, $2);
+	} elsif ($g_inbuf =~ /^\^([AQRTUX])(.*)$/s) {
+		($token, $g_inbuf) = ($1, $2);
+		$token = "\"$token\"";
+	} else {
+		 print "Error: line $g_lnum: cannot tokenize: $g_inbuf\n";
+		 if ($g_inbuf =~ /\n/) {
+			 $g_inbuf =~ s/^(.*?)\n//;
+		 } else {
+			$g_inbuf = "";
+		 }
+		 return &midas_token();
+	}
+	return $token;
+}
+
+sub unget_token {
+	my($token) = @_;
+
+	$token = "  " if ($token eq "\t");
+	$g_inbuf = $token . $g_inbuf;
+}
+
+sub midas_getc {
+	my($token);
+
+	if ($g_inbuf eq "") {
+		&fill_inbuf();
+		return undef if ($g_inbuf eq "");
+	}
+
+	$g_atspace = 0;
+	if ($g_inbuf =~ /^  +(.*)$/s) {
+		$g_inbuf = $1;
+		$token = "\t";
+		$g_atspace = 1;
+	} else {
+		$g_inbuf =~ /^(.)(.*)$/s;
+		($token, $g_inbuf) = ($1, $2);
+		$g_atspace = 1 if ($token =~ /[ \t\n]/s);
+	}
+	return $token;
+}
+
+#
+# Special case: return a token that represents a quoted string.
+# A quoted string begins with one character (the delimiter) followed by
+# any amount of characters until the next occurrence of the delimiter.
+#
+sub token_quoted_string {
+	my($quote, $c, $string);
+
+	$g_inbuf =~ s/^[ \t]+//;
+	if ($g_inbuf eq "") {
+		&error_parse("missing start char for quoted string");
+		return undef;
+	}
+	$g_inbuf =~ /^(.)(.*)$/s;
+	($quote, $g_inbuf) = ($1, $2);
+	$string = "";
+	for (;;) {
+		if ($g_inbuf eq "") {
+			&fill_inbuf();
+			return undef if ($g_inbuf eq "");
+		}
+		$g_inbuf =~ /^(.)(.*)$/s;
+		($c, $g_inbuf) = ($1, $2);
+		if ($c eq $quote) {
+			$string =~ s/\^A/\001/gs;
+			$string =~ s/\^B/\002/gs;
+			$string =~ s/\^C/\003/gs;
+			return $string;
+		}
+		$string .= $c;
+	}
+	return $string;
+}
+
+#
+# Special case: return a token that represents the rest of
+# of the line.
+#
+sub token_rest_of_line {
+	my($string);
+
+	$g_inbuf =~ /^([^\n]*\n)(.*)$/s;
+	($string, $g_inbuf) = ($1, $2);
+	return $string;
+}
+
+#
+# Special case: return a token that matches the contents of
+# bracketed text.  The first opening bracket has already been
+# consumed.  This allows nested brackets.
+#
+sub token_bracketed {
+	my($string, $pre, $c, $depth);
+
+	$depth = 1;
+	for (;;) {
+		if ($g_inbuf =~ /^([^\[\]]*)([\[\]])(.*)$/s) {
+			($pre, $c, $g_inbuf) = ($1, $2, $3);
+			$string .= $pre;
+			if ($c eq "[") {
+				$string .= $c;
+				++$depth;
+			} elsif ($depth == 1) {
+				return $string;
+			} else {
+				$string .= $c;
+				--$depth;
+			}
+		} else {
+			&fill_inbuf();
+		}
+	}
+}
+
+#
+# Special case: return a token that represents the body of
+# a macro definition.  This is all text up to a TERMINATE
+# pseudo-instruction.
+#
+sub token_definebody {
+	my($body, $depth, $token, $body1);
+
+	for (;;) {
+		($body1, $token) = &find_next_symbol();
+		$body .= $body1;
+		if ($token eq "TERMINATE" ||
+		    $g_synonym{$token} eq "TERMINATE") {
+			if ($depth == 0) {
+				$g_inbuf =~ s/^[^\n]*\n//s;
+				return $body;
+			}
+			--$depth;
+		} elsif ($token eq "DEFINE" ||
+			 $g_synonym{$token} eq "DEFINE") {
+			++$depth;
+		}
+		$body .= $token;
+	}
+}
+
+sub find_next_symbol {
+	my($body, $token);
+
+	$body = "";
+	for (;;) {
+		while ($g_inbuf =~ /^(.*?)([\.A-Z0-9]+)(.*)$/s) {
+			($token, $g_inbuf) = ($2, $3);
+			$body .= $1;
+			if ($body =~ /\^$/ && $token =~ /^[A-Z]/) {
+				$token =~ /^(.)(.*)$/;
+				$body .= $1;
+				$g_inbuf = $2 . $g_inbuf;
+				next;
+			}
+			if ($body =~ /\"$/ && $token =~ /^[A-Z]$/ && $g_inbuf =~ /^\"/) {
+				$body .= $token;
+				next;
+			}
+			return ($body, $token);
+		}
+		&fill_inbuf();
+	}
+}
+
+#
+# Special case: return a token that represents the body of
+# an IRP.  This is all text up to an ENDIRP pseudo-instruction.
+#
+sub token_irpbody {
+	my($body, $depth, $token, $body1);
+
+	for (;;) {
+		($body1, $token) = &find_next_symbol();
+		$body .= $body1;
+		if ($token eq "ENDIRP" ||
+		    $g_synonym{$token} eq "ENDIRP") {
+			if ($depth == 0) {
+				return $body;
+			}
+			--$depth;
+		} elsif ($token eq "IRP" ||
+			 $g_synonym{$token} eq "IRP" ||
+			 $token eq "IRPC" ||
+			 $g_synonym{$token} eq "IRPC") {
+			++$depth;
+		}
+		$body .= $token;
+	}
+}
+
+#
+# Fill $g_inbuf with more characters.  This will come from
+# IRP iteration (via @g_filler) or from the input file.
+#
+sub fill_inbuf {
+	my($filler);
+
+	while (@g_filler > 0) {
+		$filler = pop(@g_filler);
+		&$filler();
+		$g_havechar = 1 if ($g_inbuf =~ /^[^\n]/s);
+		return if ($g_inbuf ne "");
+	}
+	&midas_readline();
+	$g_havechar = 1 if ($g_inbuf =~ /^[^\n]/s);
+}
+
+#
+# Read the next line from the input file into $g_inbuf.
+# As a side-effect, this will call &emit_line() if the
+# previously read line has not yet been output to the
+# listing.
+#
+sub midas_readline {
+	&emit_line() if (defined($g_line));
+	while (<ASMFILE>) {
+		++$g_lnum;
+		$g_line = $_;
+		$g_inbuf .= $g_line;
+		last;
+	}
+}
+
+sub midas_readdefs {
+	my($file);
+
+	for (;;) {
+		if (!$g_reading_defs) {
+			return if (@g_defsfiles == 0);
+			$file = shift(@g_defsfiles);
+			open(DEFSFILE, $file) || die "Error: cannot open $file\n";
+			$g_reading_defs = 1;
+		}
+		while (<DEFSFILE>) {
+			$g_line = $_;
+			$g_inbuf .= $g_line;
+			push(@g_filler, \&midas_readdefs);
+			return;
+		}
+		close(DEFSFILE);
+		$g_line = undef;
+		$g_reading_defs = 0;
+	}
+}
+
+#
+# Inserts an indefinite repeat into the input buffer.  This
+# function saves the information about the repeat in @g_irp.
+# The next_irp() function is called once by this
+# function and will be called from fill_inbuf() each time the
+# input buffer is emptied; this will continue until the entire
+# indefinite repeat has been achieved.  In order to identify
+# the end of the repeated text, any existing input is stored
+# in @g_inbufstack, which will be restored after the indefinite
+# repeat completes.
+#
+sub insert_irp {
+	my($argnameref, $argsref, $body) = @_;
+	my($irpdesc);
+
+	push(@g_inbufstack, $g_inbuf);
+	$irpdesc = [ [ @$argnameref ], [ @$argsref ], $body, 0 ];
+	push(@g_irp, $irpdesc);
+	&next_irp();
+}
+
+sub next_irp {
+	my($irpdesc, $n, $i, $argname, $arg, $body);
+
+	$irpdesc = pop(@g_irp);
+	$n = $irpdesc->[3];
+	++$irpdesc->[3];
+	if (@{$irpdesc->[1]->[0]} > $n) {
+		$body = $irpdesc->[2];
+		for ($i = 0; $i < @{$irpdesc->[0]}; ++$i) {
+			$argname = $irpdesc->[0]->[$i];
+			$arg = $irpdesc->[1]->[$i]->[$n];
+			$arg = "" if (!defined($arg));
+			$body = &subst_arg($body, $argname, $arg);
+		}
+		$g_inbuf = $body;
+		push(@g_irp, $irpdesc);
+		push(@g_filler, \&next_irp);
+	} else {
+		$g_inbuf = pop(@g_inbufstack);
+	}
+}
+
+sub subst_arg {
+	my($body, $arg, $value) = @_;
+	my($out, $pre);
+
+	# Map caret-char to quoted char for ease of substitution
+	$body =~ s/\^([A-Z])/\"$1\"/gs;
+
+	while ($body =~ /^(.*?)\b$arg\b(.*)$/s) {
+		($pre, $body) = ($1, $2);
+		$out .= $pre;
+		if ($out =~ /\"\z/ && $body =~ /^\"/ && length($arg) == 1) {
+			$out .= $arg;
+		} elsif ($out =~ /\.\z/ || $body =~ /^\./) {
+			$out .= $arg;
+		} else {
+			$out .= $value;
+		}
+	}
+	return $out . $body;
+}
+
+#
+# Expand a macro.  The name has already been read.  This function reads
+# the argument values, substitutes the values for the dummy arguments,
+# and inserts the resulting text into $g_inbuf.
+#
+# If there is no value for an argument, then an empty string is
+# substituted for it, instead.
+#
+sub expand_macro {
+	my($macro) = @_;
+	my($body, $argname, $value, $gen, $tmpsym);
+	my(@args);
+
+	($body, $gen, @args) = @{$g_macro{$macro}};
+	if ($g_inbuf =~ /^ /) {
+	  while (@args) {
+		$argname = shift(@args);
+		--$gen;
+		if ($g_inbuf =~ /^\s*\[/) {
+			$g_inbuf =~ s/^\s*\[//;
+			$value = &token_bracketed();
+		} elsif ($g_inbuf =~ /^\s*(([^\s\n\,\/]+ )*[^\s\n\,\/]+)(.*)$/s) {
+			($value, $g_inbuf) = ($1, $3);
+			$value =~ s/\'//g;
+		} elsif ($g_inbuf =~ /^\s*,/s) {
+			$value = "";
+		} else {
+			&error_parse("invalid macro invocation syntax");
+			return;
+		}
+		$body = &subst_arg($body, $argname, $value);
+		if (@args) {
+			if ($g_inbuf !~ /^\s*,(.*)/s) {
+				last;
+			}
+			$g_inbuf = $1;
+		}
+	  }
+	}
+	while (@args) {
+		if ($gen <= 0) {
+			++$g_tmpnum;
+			$tmpsym = "..A$g_tmpnum";
+			$body = &subst_arg($body, shift(@args), $tmpsym);
+		} else {
+			$body = &subst_arg($body, shift(@args), "");
+			--$gen;
+		}
+	}
+	$g_inbuf = $body . $g_inbuf;
+}
+
+sub sym_lookup {
+	my($symbol) = @_;
+
+	$g_symtab{$symbol} = $V_UNDEF if (!defined($g_symtab{$symbol}));
+	print "Undefined symbol on line $g_lnum: $symbol\n" if ($g_pass == 2 && ($g_symtab{$symbol} & $V_UNDEF));
+	return $g_symtab{$symbol};
+}
+
+sub dump_undefined {
+	my($symbol);
+
+	foreach $symbol (sort keys %g_symtab) {
+		next if ($g_symtab{$symbol} <= 0177777);
+		next if ($g_symtab{$symbol} & $V_ADDR);
+		print "Symbol $symbol is undefined after pass $g_pass\n";
+	}
+}
+
+sub save_constant {
+	my($value) = @_;
+	my($i);
+
+	for ($i = 0; $i < @g_const; ++$i) {
+		if (!($value & $V_UNDEF) && !($g_const[$i] & $V_UNDEF) &&
+		    $g_const[$i] == ($value & $V_VALUE)) {
+			if ($g_pass == 2 && @g_constregions > 0) {
+				return ($g_constregions[0]->[0] + $i) | $V_ADDR;
+			} else {
+				return $V_UNDEF;
+			}
+		}
+	}
+	push(@g_const, $value & ($V_VALUE | $V_UNDEF));
+	if ($g_pass == 2 && @g_constregions > 0) {
+		return ($g_constregions[0]->[0] + scalar(@g_const) - 1) | $V_ADDR;
+	}
+	return $V_UNDEF;
+}
+
+#
+# Emits a word to both the listing file and the memory file on pass 2.
+# The general format for a line in the listing is:
+#
+#	aaaaa dddddd i i input_line
+#
+# where aaaaa is the address, dddddd is the data word, i are the interrupt
+# level characters.
+#
+# There are some special cases that are handled here:
+#
+# If the address is greater than or equal to 0100000 then the word will
+# be stored in string storage, rather than being put into memory.
+#
+# If the data value is between 0200000 and 0277777, then this represents
+# the start of a blank storage segment, rather than a data word.
+#
+# If the data value is between 0300000 and 0377777, then this represents
+# a description of the current interrupt level, rather than a data word.
+#
+sub emit_word {
+	my($addr, $word) = @_;
+
+	return if ($g_pass != 2);
+
+	$word &= $V_VALUE if ($word & $V_UNDEF);
+
+	if ($word >= 0300000 && $word <= 0377777) {
+		my($xlev, $ylev);
+
+		$xlev = ($word >> 6) & 077;
+		$ylev = $word & 077;
+		if ($xlev == 076) {
+			$g_lev = "C";
+		} elsif ($xlev == 075) {
+			$g_lev = "V";
+		} else {
+			$g_lev = "$xlev";
+		}
+		if ($ylev != $xlev) {
+			$g_lev .= " $ylev";
+		}
+		return;
+	}
+
+	if ($addr >= 0100000) {
+		$g_strings{sprintf("%06o", $addr>>6)} .= sprintf("%6o  ", $word);
+		return;
+	}
+
+	if (defined($g_memfile) && $word <= $V_VALUE) {
+		if ($f_noconc) {
+			printf MEMFILE "%05o  %06o\n", $addr, $word;
+		} else {
+			printf MEMFILE "%05o %06o\n", $addr, $word;
+		}
+	}
+
+	if (defined($g_lstfile)) {
+		if ($g_oline >= $g_lpp) {
+			print LSTFILE "\f";
+			print LSTFILE "\n" x $g_clead if ($g_clead > 0);
+			$g_oline = $g_clead;
+		}
+
+		if ($word >= 0200000 && $word <= 0277777) {
+			printf LSTFILE "%05o       ", $addr;
+			printf LSTFILE " " if ($f_noconc);
+		} else {
+			if ($f_noconc) {
+				printf LSTFILE "%05o  %06o", $addr, $word;
+			} else {
+				printf LSTFILE "%05o %06o", $addr, $word;
+			}
+		}
+
+		if (defined($g_line) && $g_line ne "\n") {
+			if ($f_noconc) {
+				print LSTFILE "  ", &format_line($g_line);
+			} else {
+				printf LSTFILE " %-3.3s %s", $g_lev, &format_line($g_line);
+			}
+			++$g_oline;
+			&add_concordance($g_line, $g_lev, $g_pagenum);
+		} elsif ($g_lev ne "") {
+			print LSTFILE " $g_lev\n";
+			++$g_oline;
+		} else {
+			print LSTFILE "\n";
+			++$g_oline;
+		}
+	}
+
+	$g_conclev = $g_lev;
+	$g_line = undef;
+}
+
+sub emit_line {
+	return if ($g_pass != 2);
+	return if (!defined($g_line));
+
+	if (defined($g_lstfile)) {
+		if ($g_oline >= $g_lpp && $g_line !~ /^\f/) {
+			print LSTFILE "\f";
+			print LSTFILE "\n" x $g_clead if ($g_clead > 0);
+			$g_oline = $g_clead;
+		}
+
+		print LSTFILE "      ^L\n" if ($g_line =~ /^\f/ && $f_showff && $g_oline <= $g_lpp);
+		$g_oline = 0 if ($g_line =~ /^\f/);
+		if ($g_line =~ /^\f*\n$/) {
+			print LSTFILE &format_line($g_line);
+			++$g_oline;
+		} else {
+			if ($f_noconc) {
+				print LSTFILE " "x15, &format_line($g_line);
+			} else {
+				print LSTFILE " "x17, &format_line($g_line);
+			}
+			++$g_oline;
+		}
+	}
+	&add_concordance($g_line, $g_conclev, $g_pagenum);
+	&print_header();
+	$g_line = undef;
+}
+
+sub format_line {
+	my($line) = @_;
+	my($out);
+
+	while ($line =~ /^([^\t]+)\t(.*)$/s) {
+		$out .= $1;
+		$line = $2;
+		$out .= " ";
+		while (length($out) % 8 != 0) {
+			$out .= " ";
+		}
+	}
+	return $out . $line;
+}
+
+sub print_strings {
+	my($key, $string, $pagenum, $prevaddr);
+
+	return if (!defined($g_strfile));
+	open(STRFILE, ">$g_strfile") || die "Error: cannot create $g_strfile\n";
+	foreach $key (sort keys %g_strings) {
+		if (oct($key) != $prevaddr) {
+			$prevaddr = oct($key);
+			++$pagenum;
+			print STRFILE "\f" if ($pagenum != 1);
+			print STRFILE "\n";
+			print STRFILE "\n";
+			print STRFILE "\n";
+			printf STRFILE "PAGE   %d               %s  %s\n", $pagenum, $g_title, $g_datestr;
+			print STRFILE "\n";
+		}
+		$string = $g_strings{$key};
+		$string =~ s/\"Z\"/\n/g;
+		$string =~ s/[ \t]+\n/\n/g;
+		print STRFILE $string;
+	}
+	close(STRFILE);
+}
+
+#
+# Add the words in a line to the interrupt concordance list.
+# Words within comments are not included.  The page number and
+# interrupt level are passed in as arguments.
+#
+sub add_concordance {
+	my($line, $lev, $pagenum) = @_;
+	my($word, $conc);
+	my(@words);
+
+	return if ($g_pass != 2);
+	return if ($line =~ /^\//);
+
+	$pagenum = 1 if ($pagenum eq "");
+	$pageref = $pagenum if ($lev eq "");
+	$pageref = $pagenum . "($lev)" if ($lev ne "");
+
+	# Remove comment
+	$line =~ s/\s+\/.*$//s;
+
+	# Convert "control" characters
+	$line =~ s/\^([A-Z])/\"$1\"/gs;
+
+	if ($line =~ /^([0-9A-Z\.]+):(.*)$/s) {
+		($word, $line) = ($1, $2);
+		$word =~ s/^(......).*$/$1/;
+		if (defined($g_concdef{$word})) {
+			$g_concdef{$word} .= ",$pageref";
+		} else {
+			$g_concdef{$word} = $pageref;
+		}
+		++$g_concword{$word};
+	} elsif ($line =~ /^\s*([0-9A-Z\.]+)\=(.*)$/s) {
+		($word, $line) = ($1, $2);
+		$word =~ s/^(......).*$/$1/;
+		if (defined($g_concdef{$word})) {
+			$g_concdef{$word} .= ",$pageref";
+		} else {
+			$g_concdef{$word} = $pageref;
+		}
+		++$g_concword{$word};
+	}
+	$line =~ s/\"[AQRTUXZ]\"/ /g;
+	$line =~ s/[^0-9A-Z\.]+/ /g;
+	$line =~ s/\s\s+/ /g;
+	$line =~ s/^\s+//;
+	@words = split(/\s+/, $line);
+	foreach $word (@words) {
+		$word =~ s/^(......).*$/$1/;
+		next if ($word eq ".");
+		next if ($word =~ /^[0-9]+\.?$/);
+		push(@{$g_concused{$word}}, $pageref);
+		++$g_concword{$word};
+	}
+}
+
+sub print_concordance {
+	my($word, $def, $used, $col, $first);
+	my(@locs);
+	my(%skips);
+
+	return if (!defined($g_concfile));
+	open(CONCFILE, ">$g_concfile") || die "Error: cannot create $g_concfile\n";
+	foreach $word (@skipconc) {
+		$skips{$word} = 1;
+	}
+
+	foreach $word (sort keys %g_concword) {
+		next if ($skips{$word});
+
+		printf CONCFILE "%-6.6s  ", $word;
+		$col = 9;
+
+		$def = $g_concdef{$word};
+		if (defined($def)) {
+			print CONCFILE $def;
+			$col += length($def);
+		} else {
+			print CONCFILE "-";
+			++$col;
+		}
+		if (!defined($g_concused{$word})) {
+			print CONCFILE "\n";
+			next;
+		}
+
+		if ($col < 17) {
+			print CONCFILE " "x(19-$col);
+			$col = 19;
+		} else {
+			print CONCFILE "  ";
+			$col += 2;
+		}
+		@locs = sort bypri @{$g_concused{$word}};
+		$first = 1;
+		foreach $used (@locs) {
+			++$col, print CONCFILE "," if (!$first);
+			$first = 0;
+			$col = 20, print CONCFILE "\n" . " "x19 if ($col > 66);
+			print CONCFILE $used;
+			$col += length($used);
+		}
+		print CONCFILE "\n";
+	}
+	close(CONCFILE);
+}
+
+sub bypri {
+	my($pg1, $hp1, $sp1);
+	my($pg2, $hp2, $sp2);
+
+	$a =~ /^(\d+)(\(((\d+) )?(\w+)\))?$/;
+	($pg1, $hp1, $sp1) = ($1, $4, $5);
+	$b =~ /^(\d+)(\(((\d+) )?(\w+)\))?$/;
+	($pg2, $hp2, $sp2) = ($1, $4, $5);
+	return -1 if ($pg1 < $pg2);
+	return  1 if ($pg1 > $pg2);
+	return -1 if ($sp1 lt $sp2);
+	return  1 if ($sp1 gt $sp2);
+	return -1 if ($hp1 ne "" && $hp2 ne "" && $hp1 < $hp2);
+	return  1 if ($hp1 ne "" && $hp2 ne "" && $hp1 > $hp2);
+	return 0;
+}
+
+sub print_header {
+	my($string);
+
+	return if ($g_pass != 2);
+	return if (!defined($g_line));
+	return if ($g_pagenum != 0 && $g_line !~ /\f/);
+	return if (!defined($g_lstfile));
+	++$g_pagenum;
+	if ($g_lead > $g_oline) {
+		print LSTFILE "\n" x ($g_lead - $g_oline);
+		$g_oline = $g_lead;
+	}
+	foreach $string (@g_banners) {
+		print LSTFILE "$string\n";
+		++$g_oline;
+	}
+	printf LSTFILE "PAGE  %d   %s   %s\n", $g_pagenum, $g_title, $g_datestr;
+	print LSTFILE "\n";
+	$g_oline += 2;
+}
